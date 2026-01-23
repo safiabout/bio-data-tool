@@ -9,35 +9,59 @@ from matplotlib.backend_bases import key_press_handler # https://matplotlib.org/
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
-data = None
-strain = "A.J"
+datasets = {}
 start_idx = 0
-window_size = 10  # how many proteins to show at once
+window_size = 10
 
 def load_csv():
-    global data, strain_var
-    file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
-    if file_path:
-        data = pd.read_csv(file_path)
-        data['Strain Only'] = data['Strains'].str.split('_').str[0]
-        strains = data['Strain Only'].unique()  # get all unique strain names
-        strain_var.set(strains[0])             # default selection
-        strain_menu['menu'].delete(0, 'end')   # clear old menu
-        for s in strains:
-            strain_menu['menu'].add_command(label=s, command=tk._setit(strain_var, s))
-        messagebox.showinfo("Success", "CSV loaded successfully")
+    global datasets, dataset_var, strand_var
+    file_paths = filedialog.askopenfilenames(title="Select CSV files", filetypes=[("CSV files", "*.csv")], multiple=True)
+
+    for path in file_paths:
+        name = path.split("/")[-1].replace(".csv","")  # filename as friendly name
+        datasets[name] = pd.read_csv(path)
+    
+    # Update the dataset dropdown
+    dataset_menu['menu'].delete(0, 'end')  # clear old items
+    for name in datasets.keys():
+        dataset_menu['menu'].add_command(label=name, command=tk._setit(dataset_var, name))
+
+    if datasets:
+        first_dataset = list(datasets.keys())[0]
+        dataset_var.set(first_dataset)
+
+        update_strand_dropdown()
+        plot_averages()
+        messagebox.showinfo("Success", f"{len(datasets)} datasets loaded!")
+
+def update_strand_dropdown():
+    global strain_menu, strain_var
+    dataset_name = dataset_var.get()
+
+    df = datasets[dataset_name]
+    df['Strain Only'] = df['Strains'].str.split('_').str[0]
+
+    strains = df['Strain Only'].unique()
+    strain_var.set(strains[0])
+    strain_menu['menu'].delete(0, 'end')
+
+    for s in strains:
+        strain_menu['menu'].add_command(label=s, command=tk._setit(strain_var, s))
 
 def plot_averages():
-    global data, start_idx, window_size, strain
-    if data is None:
+    global dataset_var, start_idx, window_size, strain
+    if dataset_var is None:
         messagebox.showerror("Error", "Load a CSV first.")
         return
     
-    data['Strain Only'] = data['Strains'].str.split('_').str[0]
+    df = datasets[dataset_var.get()]
+    
+    df['Strain Only'] = df['Strains'].str.split('_').str[0]
     
     strain = strain_var.get()
-    if strain not in data['Strain Only'].unique():
-        return
+    if strain not in df['Strain Only'].unique():
+        strain_var.set(df['Strain Only'].unique()[0])
+        strain = strain_var.get()
     
     try:
         window_size = int(window_entry.get())
@@ -45,13 +69,17 @@ def plot_averages():
         messagebox.showerror("Error", "Window size must be an integer.")
         return
 
-    subset = data[data['Strain Only'] == strain]
+    subset = df[df['Strain Only'] == strain_var.get()]
     if subset.empty:
         messagebox.showerror("Error", "No rows found for that strain.")
         return
 
     averages = subset.mean(numeric_only=True)
     n_proteins = len(averages)
+
+    if start_idx >= n_proteins:
+        start_idx = max(0, n_proteins - window_size)
+
     end_idx = min(start_idx + window_size, n_proteins)
     plot_data = averages.iloc[start_idx:end_idx]
 
@@ -59,12 +87,12 @@ def plot_averages():
     ax = fig.add_subplot(111)
     plot_data.plot(kind='bar', ax=ax)
 
-    ax.set_title(f"Average Protein Levels for {strain}")
-    ax.set_xlabel("Proteins")
+    ax.set_title(f"Average {dataset_var.get().split('_')[0]} for {strain}")
+    ax.set_xlabel(dataset_var.get().split('_')[0])
     ax.set_ylabel("Average")
 
     # Progress label
-    progress_var.set(f"Showing proteins {start_idx+1}-{end_idx} of {n_proteins}")
+    progress_var.set(f"Showing {dataset_var.get().split('_')[0]} range {start_idx+1}-{end_idx} of {n_proteins}")
 
     for widget in plot_frame.winfo_children():
         widget.destroy()
@@ -80,18 +108,21 @@ def move_left():
 
 def move_right():
     global start_idx
-    if data is None:
+    if dataset_var is None:
         return
-    subset = data[data['Strain Only'] == strain]
+    
+    df = datasets[dataset_var.get()]
+    subset = df[df['Strain Only'] == strain_var.get()]
     averages = subset.mean(numeric_only=True)
     start_idx = min(len(averages) - window_size, start_idx + window_size)
     plot_averages()
 
 application = tk.Tk()
+strand_var = tk.StringVar()
 
 application.title("Data Visualization Tool")
-application.geometry("900x600")
-# application.resizable(False, False)
+application.geometry("900x950")
+application.resizable(False, False)
 application.configure(bg="white")
 
 top_frame = tk.Frame(application)
@@ -99,24 +130,32 @@ top_frame.pack(pady=10)
 
 tk.Button(top_frame, text="Load CSV", command=load_csv).grid(row=0, column=0, padx=5)
 
+dataset_var = tk.StringVar()
+dataset_var.set("Select Dataset")  # default text
+dataset_var.trace('w', lambda *args: [update_strand_dropdown(), plot_averages()])
+
+dataset_menu = tk.OptionMenu(top_frame, dataset_var, "")
+dataset_menu.config(fg="black")
+dataset_menu.grid(row=0, column=2, padx=5)
+
 strain_var = tk.StringVar()
 strain_var.set("Select Strain")  # default text before CSV is loaded
 
-tk.Label(top_frame, text="Strain:").grid(row=0, column=2, padx=5)
+tk.Label(top_frame, text="Strain:").grid(row=0, column=4, padx=5)
 strain_menu = tk.OptionMenu(top_frame, strain_var, "")  # empty for now, filled after CSV load
 strain_menu.config(fg="black")
-strain_menu.grid(row=0, column=3, padx=5)
+strain_menu.grid(row=0, column=5, padx=5)
 
-tk.Label(top_frame, text="Window size:").grid(row=0, column=4, padx=5)
+tk.Label(top_frame, text="Window size:").grid(row=0, column=6, padx=5)
 window_entry = tk.Entry(top_frame, width=5)
 window_entry.insert(0, str(window_size))
-window_entry.grid(row=0, column=5, padx=5)
+window_entry.grid(row=0, column=7, padx=5)
 
-tk.Button(top_frame, text="Plot", command=plot_averages).grid(row=0, column=6, padx=10)
+tk.Button(top_frame, text="Plot", command=plot_averages).grid(row=0, column=8, padx=10)
 
 # Left / Right buttons
-tk.Button(top_frame, text="←", width=3, command=move_left).grid(row=0, column=7, padx=5)
-tk.Button(top_frame, text="→", width=3, command=move_right).grid(row=0, column=8, padx=5)
+tk.Button(top_frame, text="←", width=3, command=move_left).grid(row=0, column=9, padx=5)
+tk.Button(top_frame, text="→", width=3, command=move_right).grid(row=0, column=10, padx=5)
 
 progress_var = tk.StringVar()
 progress_label = tk.Label(application, textvariable=progress_var)
