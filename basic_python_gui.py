@@ -85,7 +85,11 @@ def plot_averages():
 
     fig = plt.Figure(figsize=(6,4))
     ax = fig.add_subplot(111)
-    plot_data.plot(kind='bar', ax=ax)
+    
+    bars = ax.bar(plot_data.index, plot_data.values)
+
+    for bar in bars:
+        bar.set_picker(True)  # enable clicking
 
     ax.set_title(f"Average {dataset_var.get().split('_')[0]} for {strain}")
     ax.set_xlabel(dataset_var.get().split('_')[0])
@@ -98,6 +102,7 @@ def plot_averages():
         widget.destroy()
 
     canvas = FigureCanvasTkAgg(fig, master=plot_frame)
+    canvas.mpl_connect("pick_event", on_bar_click)
     canvas.draw()
     canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
@@ -116,6 +121,23 @@ def move_right():
     averages = subset.mean(numeric_only=True)
     start_idx = min(len(averages) - window_size, start_idx + window_size)
     plot_averages()
+
+def on_bar_click(event):
+    bar = event.artist
+    label = bar.get_x() + bar.get_width() / 2
+    height = bar.get_height()
+
+    protein = bar.axes.get_xticklabels()[int(bar.get_x() + 0.5)].get_text()
+
+    messagebox.showinfo(
+        "Bar Clicked",
+        f"You clicked:\n{protein}\nValue: {height:.2f}"
+    )
+
+    # this is where we can have:
+    # - heatmap
+    # - species breakdown
+    # - new window
 
 application = tk.Tk()
 strand_var = tk.StringVar()
