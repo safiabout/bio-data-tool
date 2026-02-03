@@ -48,6 +48,26 @@ def get_lipid_class(col_name):
     match = re.match(r"[A-Za-z]+", col_name)
     return match.group(0) if match else None
 
+def format_columns(items, n_rows=10, col_width=22):
+    """
+    items: list of (label, value) tuples
+    n_rows: max rows per column
+    col_width: character width of each column
+    """
+    lines = []
+    for i in range(0, len(items), n_rows):
+        chunk = items[i:i + n_rows]
+        col = [
+            f"{k}: {v:.3f}".ljust(col_width)
+            for k, v in chunk
+        ]
+        lines.append(col)
+
+    # transpose columns → rows
+    return "\n".join(
+        "".join(row) for row in zip(*lines)
+    )
+
 def plot_averages():
     global dataset
 
@@ -67,18 +87,11 @@ def plot_averages():
         lipid = get_lipid_class(col)
         lipid_groups.setdefault(lipid, []).append(col)
 
-    # aggregate per lipid class (mean across mice, sum across species)
-    lipid_totals = {}
     selected_lipids = selected_listbox.get(0, tk.END)
 
     if not selected_lipids:
         messagebox.showerror("Error", "Select at least one lipid to display.")
         return
-
-    for lipid in selected_lipids:
-        cols = lipid_groups.get(lipid, [])
-        if cols:
-            lipid_totals[lipid] = df[cols].mean().sum()
 
     fig = Figure(figsize=(4, 6))
     ax = fig.add_subplot(111)
@@ -87,12 +100,20 @@ def plot_averages():
     bars = []
 
     cmap = plt.get_cmap("tab20")
-    colors = cmap(np.arange(len(lipid_totals)))
+    colors = cmap(np.arange(len(selected_lipids)))
 
-    for (lipid, value), color in zip(lipid_totals.items(), colors):
+    for lipid, color in zip(selected_lipids, colors):
+        cols = lipid_groups.get(lipid, [])
+
+        if not cols:
+            continue
+            
+        species_means = df[cols].mean()   # CE(16:0), CE(16:1), ...
+        total_value = species_means.sum()
+
         bar = ax.bar(
             [0],
-            value,
+            total_value,
             bottom=bottom,
             label=lipid,
             color=color,
@@ -101,9 +122,10 @@ def plot_averages():
 
         rect = bar[0]
         rect.lipid_class = lipid
-        rect.avg_data = {lipid: value}  # or sub-lipid dict later
+        rect.avg_data = species_means 
+
         bars.append(rect)
-        bottom += value
+        bottom += total_value
 
 
     ax.set_xticks([0])
@@ -133,11 +155,17 @@ def plot_averages():
         rect = sel.artist
         lipid = rect.lipid_class
 
-        text = f"{lipid}\n"
-        for sublipid, val in rect.avg_data.items():
-            text += f"{sublipid}: {val:.3f}\n"
+        items = list(rect.avg_data.items())
 
-        sel.annotation.set_text(text.rstrip())
+        body = format_columns(
+            items,
+            n_rows=16,       # max lines per column
+            col_width=24    # spacing between columns
+        )
+
+        sel.annotation.set_text(f"{lipid}\n{body}")
+        sel.annotation.get_bbox_patch().set_alpha(0.9)
+        sel.annotation.get_bbox_patch().set_boxstyle("round,pad=0.3")
 
 def move_items(src, dst):
     selections = list(src.curselection())
@@ -156,7 +184,7 @@ def on_bar_click(event):
     )
 
     # NEXT STEP:
-    # open new window with stacked CE(16:0), CE(18:1), ...
+    # open new window with heatmap of subtypes and  within this class?
 
 application = tk.Tk()
 strand_var = tk.StringVar()
