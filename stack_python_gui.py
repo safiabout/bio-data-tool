@@ -14,6 +14,10 @@ import mplcursors
 
 dataset = None
 start_idx = 6 # hardcoded for csv file
+bar_chart_frame = None  # Global reference to bar chart frame
+pie_chart_container = None  # Global reference to pie chart frame
+lipid_checkboxes = {}  # Dict to store {lipid_name: BooleanVar}
+plot_button = None  # Global reference to plot button
 
 def load_csv():
     global dataset
@@ -38,11 +42,36 @@ def load_csv():
         if get_lipid_class(c) is not None
     })
 
-    available_listbox.delete(0, tk.END)
-    selected_listbox.delete(0, tk.END)
+    # Clear existing checkboxes
+    global lipid_checkboxes
+    for widget in lipid_checkbox_frame.winfo_children():
+        widget.destroy()
+    lipid_checkboxes.clear()
 
+    # Create checkbox for each lipid
     for lipid in lipids:
-        available_listbox.insert(tk.END, lipid)
+        var = tk.BooleanVar(value=True)  # Auto-select all by default
+        lipid_checkboxes[lipid] = var
+
+        cb = tk.Checkbutton(
+            lipid_checkbox_frame,
+            text=lipid,
+            variable=var,
+            font=("Arial", 13),
+            bg="white",
+            anchor="w",
+            activebackground="white",
+            relief=tk.FLAT,
+            highlightthickness=0,
+            bd=0,
+            padx=10,
+            pady=5
+        )
+        cb.pack(fill=tk.X, padx=2, pady=1)
+
+    # Enable and update plot button styling to match Load CSV
+    global plot_button
+    plot_button.config(state=tk.NORMAL, bg="SystemButtonFace", fg="black")
 
 def get_lipid_class(col_name):
     match = re.match(r"[A-Za-z]+", col_name)
@@ -69,7 +98,7 @@ def format_columns(items, n_rows=10, col_width=22):
     )
 
 def plot_averages():
-    global dataset
+    global dataset, bar_chart_frame
 
     if dataset is None:
         messagebox.showerror("Error", "Load a CSV first.")
@@ -87,11 +116,24 @@ def plot_averages():
         lipid = get_lipid_class(col)
         lipid_groups.setdefault(lipid, []).append(col)
 
-    selected_lipids = selected_listbox.get(0, tk.END)
+    # Get selected lipids from checkboxes
+    selected_lipids = [lipid for lipid, var in lipid_checkboxes.items() if var.get()]
 
     if not selected_lipids:
         messagebox.showerror("Error", "Select at least one lipid to display.")
         return
+
+    # Sort lipids by total value (largest first, so they appear at bottom)
+    lipid_totals = {}
+    for lipid in selected_lipids:
+        cols = lipid_groups.get(lipid, [])
+        if cols:
+            total_value = df[cols].mean().sum()
+            lipid_totals[lipid] = total_value
+        else:
+            lipid_totals[lipid] = 0
+
+    selected_lipids = sorted(selected_lipids, key=lambda x: lipid_totals[x], reverse=True)
 
     fig = Figure(figsize=(4, 6))
     ax = fig.add_subplot(111)
@@ -117,7 +159,7 @@ def plot_averages():
             bottom=bottom,
             label=lipid,
             color=color,
-            picker=True
+            picker=50  # Very large pick tolerance for easy clicking
         )
 
         rect = bar[0]
@@ -139,52 +181,156 @@ def plot_averages():
         loc="upper left"
     )
 
+    # Adjust layout to prevent legend cutoff
+    fig.tight_layout(rect=[0, 0, 0.85, 1])
+
     # clear old plot
-    for widget in plot_frame.winfo_children():
+    for widget in bar_chart_frame.winfo_children():
         widget.destroy()
 
-    canvas = FigureCanvasTkAgg(fig, master=plot_frame)
-    canvas.mpl_connect("pick_event", on_bar_click)
+    canvas = FigureCanvasTkAgg(fig, master=bar_chart_frame)
+
+    # Use button_press_event for immediate response
+    def on_canvas_click(event):
+        if event.inaxes == ax and event.xdata is not None and event.ydata is not None:
+            # Find which bar was clicked based on y-coordinate
+            y_pos = event.ydata
+            cumulative = 0
+            for bar_rect in bars:
+                bar_height = bar_rect.get_height()
+                if cumulative <= y_pos <= cumulative + bar_height:
+                    lipid_class = bar_rect.lipid_class
+                    species_data = bar_rect.avg_data
+                    show_heatmap(lipid_class, species_data)
+                    break
+                cumulative += bar_height
+
+    canvas.mpl_connect("button_press_event", on_canvas_click)
     canvas.draw()
-    canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+    canvas_widget = canvas.get_tk_widget()
+    canvas_widget.config(cursor="hand2")  # Show hand cursor to indicate clickable
+    canvas_widget.pack(fill=tk.BOTH, expand=True)
 
-    cursor = mplcursors.cursor(bars, hover=True)
+def show_heatmap(lipid_class, species_data):
+    """Display heatmap showing species breakdown for selected lipid class"""
+    global pie_chart_container
 
-    @cursor.connect("add")
-    def on_add(sel):
-        rect = sel.artist
-        lipid = rect.lipid_class
+    # Clear existing widgets
+    for widget in pie_chart_container.winfo_children():
+        widget.destroy()
 
-        items = list(rect.avg_data.items())
+    # Create close button frame at top
+    button_frame = tk.Frame(pie_chart_container, bg="white")
+    button_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
 
-        body = format_columns(
-            items,
-            n_rows=16,       # max lines per column
-            col_width=24    # spacing between columns
-        )
+    close_btn = tk.Button(
+        button_frame,
+        text="✕ Close",
+        command=close_heatmap,
+        font=("Arial", 10),
+        relief=tk.FLAT,
+        bg="#f0f0f0"
+    )
+    close_btn.pack(side=tk.RIGHT)
 
-        sel.annotation.set_text(f"{lipid}\n{body}")
-        sel.annotation.get_bbox_patch().set_alpha(0.9)
-        sel.annotation.get_bbox_patch().set_boxstyle("round,pad=0.3")
+    # Sort species by abundance (highest first)
+    species_data = species_data.sort_values(ascending=False)
 
-def move_items(src, dst):
-    selections = list(src.curselection())
-    for i in reversed(selections):
-        item = src.get(i)
-        dst.insert(tk.END, item)
-        src.delete(i)
+    labels = species_data.index.tolist()
+    values = species_data.values
 
-def on_bar_click(event):
-    lipid_class = event.artist.get_label()
-    value = event.artist.get_height()
+    # Reshape data for heatmap (n_species x 1 matrix)
+    data_2d = values.reshape(-1, 1)
 
-    messagebox.showinfo(
-        "Lipid Class Selected",
-        f"{lipid_class}\nTotal: {value:.2f}"
+    # Calculate figure height - no cap, allow scrolling for many species
+    n_species = len(labels)
+    fig_height = max(6, n_species * 0.35)  # No upper limit
+
+    # Create scrollable container for heatmap
+    scroll_container = tk.Frame(pie_chart_container, bg="white")
+    scroll_container.pack(fill=tk.BOTH, expand=True)
+
+    # Create canvas for scrolling
+    heatmap_canvas = tk.Canvas(scroll_container, bg="white", highlightthickness=0)
+    heatmap_scrollbar = tk.Scrollbar(scroll_container, orient="vertical", command=heatmap_canvas.yview)
+
+    # Create frame inside canvas to hold the matplotlib figure
+    scrollable_heatmap_frame = tk.Frame(heatmap_canvas, bg="white")
+
+    scrollable_heatmap_frame.bind(
+        "<Configure>",
+        lambda e: heatmap_canvas.configure(scrollregion=heatmap_canvas.bbox("all"))
     )
 
-    # NEXT STEP:
-    # open new window with heatmap of subtypes and  within this class?
+    heatmap_canvas.create_window((0, 0), window=scrollable_heatmap_frame, anchor="nw")
+    heatmap_canvas.configure(yscrollcommand=heatmap_scrollbar.set)
+
+    # Pack scrollbar and canvas
+    heatmap_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+    heatmap_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+    # Create heatmap (50% width for 50/50 split)
+    fig = Figure(figsize=(6, fig_height))
+    ax = fig.add_subplot(111)
+
+    # Create heatmap with YlOrRd colormap
+    im = ax.imshow(data_2d, aspect='auto', cmap='YlOrRd', vmin=0)
+
+    # Set ticks and labels
+    ax.set_yticks(np.arange(n_species))
+    ax.set_yticklabels(labels, fontsize=9)
+    ax.set_xticks([0])
+    ax.set_xticklabels(['Abundance'], fontsize=10)
+
+    # Add value annotations in each cell
+    for i in range(n_species):
+        value = data_2d[i, 0]
+        # Use white text for dark cells, black for light cells
+        text_color = 'white' if value > data_2d.max() * 0.5 else 'black'
+        ax.text(0, i, f'{value:.3f}',
+                ha="center", va="center",
+                color=text_color, fontsize=9, fontweight='bold')
+
+    # Add colorbar
+    cbar = fig.colorbar(im, ax=ax, label='Abundance', pad=0.02)
+    cbar.ax.tick_params(labelsize=8)
+
+    ax.set_title(f"Species Breakdown: {lipid_class}", fontsize=12, fontweight='bold', pad=10)
+
+    # Adjust layout to fit everything
+    fig.tight_layout()
+
+    # Create matplotlib canvas and embed in scrollable frame
+    mpl_canvas = FigureCanvasTkAgg(fig, master=scrollable_heatmap_frame)
+    mpl_canvas.draw()
+    mpl_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    # Enable mouse wheel scrolling for heatmap
+    def _on_heatmap_mousewheel(event):
+        heatmap_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+    def _bind_heatmap_mousewheel(event):
+        heatmap_canvas.bind_all("<MouseWheel>", _on_heatmap_mousewheel)
+
+    def _unbind_heatmap_mousewheel(event):
+        heatmap_canvas.unbind_all("<MouseWheel>")
+
+    heatmap_canvas.bind("<Enter>", _bind_heatmap_mousewheel)
+    heatmap_canvas.bind("<Leave>", _unbind_heatmap_mousewheel)
+
+    # Show the heatmap container (50% split with bar chart)
+    pie_chart_container.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10)
+
+def close_heatmap():
+    """Hide the heatmap and return to single bar chart view"""
+    global pie_chart_container
+
+    # Hide the container
+    pie_chart_container.pack_forget()
+
+    # Clear widgets
+    for widget in pie_chart_container.winfo_children():
+        widget.destroy()
 
 application = tk.Tk()
 strand_var = tk.StringVar()
@@ -194,47 +340,93 @@ application.geometry("1790x950")
 application.resizable(False, False)
 application.configure(bg="white")
 
-list_frame = tk.Frame(application)
-list_frame.pack(pady=10)
+# Main container with left controls and right plots
+main_container = tk.Frame(application, bg="white")
+main_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-tk.Label(list_frame, text="Available Lipids").grid(row=0, column=0)
-tk.Label(list_frame, text="Displayed Lipids").grid(row=0, column=2)
+# Left control panel
+control_panel = tk.Frame(main_container, bg="white", width=250)
+control_panel.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
+control_panel.pack_propagate(False)  # Maintain fixed width
 
-available_listbox = tk.Listbox(
-    list_frame,
-    selectmode=tk.MULTIPLE,
-    height=10,
-    exportselection=False
+# Load CSV button at top
+tk.Button(
+    control_panel,
+    text="Load CSV",
+    command=load_csv,
+    width=20,
+    height=2,
+    font=("Arial", 10, "bold")
+).pack(pady=(0, 10))
+
+# Lipid selection label
+tk.Label(
+    control_panel,
+    text="Select Lipids to Display:",
+    font=("Arial", 10, "bold"),
+    bg="white"
+).pack(pady=(0, 5))
+
+# Lipid selection with scrollable checkboxes
+checkbox_outer_frame = tk.Frame(control_panel, bg="white")
+checkbox_outer_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+# Create canvas with scrollbar
+canvas = tk.Canvas(checkbox_outer_frame, bg="white", highlightthickness=0)
+scrollbar = tk.Scrollbar(checkbox_outer_frame, orient="vertical", command=canvas.yview)
+scrollable_frame = tk.Frame(canvas, bg="white")
+
+scrollable_frame.bind(
+    "<Configure>",
+    lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
 )
-available_listbox.grid(row=1, column=0, padx=10)
 
-selected_listbox = tk.Listbox(
-    list_frame,
-    selectmode=tk.MULTIPLE,
-    height=10,
-    exportselection=False
+canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+canvas.configure(yscrollcommand=scrollbar.set)
+
+# Enable mouse wheel scrolling (bind to canvas only, not all widgets)
+def _on_mousewheel(event):
+    canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+def _bind_mousewheel(event):
+    canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+def _unbind_mousewheel(event):
+    canvas.unbind_all("<MouseWheel>")
+
+canvas.bind("<Enter>", _bind_mousewheel)
+canvas.bind("<Leave>", _unbind_mousewheel)
+
+canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+# Store reference to scrollable frame for adding checkboxes
+lipid_checkbox_frame = scrollable_frame
+
+# Plot button at bottom (disabled initially with white text)
+plot_button = tk.Button(
+    control_panel,
+    text="Plot",
+    command=plot_averages,
+    width=20,
+    height=2,
+    font=("Arial", 10, "bold"),
+    state=tk.DISABLED,
+    fg="white",
+    disabledforeground="white"
 )
-selected_listbox.grid(row=1, column=2, padx=10)
+plot_button.pack()
 
-top_frame = tk.Frame(application)
-top_frame.pack(pady=10)
+# Right side: plots container
+plots_container = tk.Frame(main_container, bg="white")
+plots_container.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
-tk.Button(top_frame, text="Load CSV", command=load_csv).grid(row=0, column=0, padx=5)
+# Left side: bar chart (always visible)
+bar_chart_frame = tk.Frame(plots_container, bg="white")
+bar_chart_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-tk.Button(top_frame, text="Plot", command=plot_averages).grid(row=0, column=8, padx=10)
-
-btn_frame = tk.Frame(list_frame)
-btn_frame.grid(row=1, column=1)
-
-tk.Button(btn_frame, text="→", command=lambda: move_items(
-    available_listbox, selected_listbox
-)).pack(pady=5)
-
-tk.Button(btn_frame, text="←", command=lambda: move_items(
-    selected_listbox, available_listbox
-)).pack(pady=5)
-
-plot_frame = tk.Frame(application, bg="white")
-plot_frame.pack(fill=tk.BOTH, expand=True)
+# Right side: pie chart (initially hidden)
+pie_chart_container = tk.Frame(plots_container, bg="white")
+# Don't pack initially - will be shown when bar is clicked
 
 application.mainloop()
