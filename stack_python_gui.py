@@ -58,6 +58,8 @@ def load_csv():
             text=lipid,
             variable=var,
             font=("Arial", 13),
+            fg="black",
+            activeforeground="darkblue",
             bg="white",
             anchor="w",
             activebackground="white",
